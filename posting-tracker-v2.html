@@ -341,6 +341,7 @@
     animation: pulse 1s infinite;
   }
   @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 #00e5ff44} 50%{box-shadow:0 0 0 8px #00e5ff00} }
+  @keyframes ripple { 0%{transform:scale(1);opacity:0.4} 100%{transform:scale(2.8);opacity:0} }
 
   /* スクロールバー */
   ::-webkit-scrollbar { width: 3px; }
@@ -451,7 +452,7 @@ const AREA_COLORS  = ["#ff9100","#e040fb","#40c4ff","#69f0ae","#ffea00","#ff5252
 // ============================================================
 // 状態
 // ============================================================
-let map, currentPolyline, currentMarker;
+let map, currentPolyline, currentMarker, liveMarker, liveAccuracyCircle;
 let recording = false;
 let watchId = null, timerId = null;
 let startTime = 0, elapsed = 0;
@@ -482,6 +483,9 @@ function initMap() {
     attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     maxZoom: 19,
   }).addTo(map);
+
+  // 常時現在地追跡
+  startLiveLocation();
 
   // エリアデータが埋め込まれていれば自動読み込み
   if (typeof AREA_GEOJSON !== 'undefined') {
@@ -840,6 +844,55 @@ function downloadSampleGeoJSON() {
   };
   downloadFile(JSON.stringify(sample, null, 2), "sample_areas.geojson", "application/json");
   toast("サンプルをダウンロードしました");
+}
+
+// ============================================================
+// 常時現在地表示
+// ============================================================
+function startLiveLocation() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.watchPosition(
+    pos => {
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+      const acc = pos.coords.accuracy;
+
+      // GPS精度円
+      if (liveAccuracyCircle) {
+        liveAccuracyCircle.setLatLng([lat, lon]);
+        liveAccuracyCircle.setRadius(acc);
+      } else {
+        liveAccuracyCircle = L.circle([lat, lon], {
+          radius: acc,
+          color: '#00e5ff',
+          fillColor: '#00e5ff',
+          fillOpacity: 0.08,
+          weight: 1,
+          opacity: 0.4,
+        }).addTo(map);
+      }
+
+      // 現在地マーカー（記録中でない場合のみ表示）
+      if (!recording) {
+        const html = '<div style="position:relative;width:24px;height:24px">' +
+          '<div style="position:absolute;inset:0;border-radius:50%;background:#00e5ff;opacity:0.35;animation:ripple 1.6s infinite ease-out"></div>' +
+          '<div style="position:absolute;inset:0;border-radius:50%;background:#00e5ff;opacity:0.2;animation:ripple 1.6s infinite ease-out 0.5s"></div>' +
+          '<div style="position:absolute;inset:5px;border-radius:50%;background:#00e5ff;border:2.5px solid #fff;box-shadow:0 0 10px #00e5ff88"></div>' +
+          '</div>';
+        const icon = L.divIcon({ className: '', html: html, iconSize: [24,24], iconAnchor: [12,12] });
+        if (liveMarker) {
+          liveMarker.setLatLng([lat, lon]);
+          liveMarker.setIcon(icon);
+        } else {
+          liveMarker = L.marker([lat, lon], { icon: icon, zIndexOffset: 1000 }).addTo(map);
+        }
+      } else {
+        if (liveMarker) { map.removeLayer(liveMarker); liveMarker = null; }
+      }
+    },
+    err => {},
+    { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 }
+  );
 }
 
 // ============================================================
