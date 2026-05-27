@@ -416,6 +416,7 @@
     <div id="tab-rec" class="tab-content active">
       <button class="btn btn-cyan" id="start-btn" onclick="startRecording()">▶ 配布開始</button>
       <button class="btn btn-pink" id="stop-btn" onclick="stopRecording()" style="display:none">■ 記録停止</button>
+      <div id="bg-warning" style="display:none;font-size:10px;color:var(--yellow);text-align:center;margin-top:8px;line-height:1.6">⚠️ 画面をオフにすると軌跡が途切れる場合があります<br>画面を点けたままご使用ください</div>
     </div>
 
     <!-- 履歴タブ -->
@@ -459,7 +460,7 @@
     <input id="modal-input" type="text" placeholder="記録名を入力">
     <div class="modal-btns">
       <button class="btn btn-cyan" style="margin:0;flex:1;padding:12px" onclick="saveTrack()">保存・送信</button>
-      <button class="btn btn-muted" style="margin:0;flex:1;padding:12px" onclick="discardTrack()">破棄</button>
+      <button class="btn btn-muted" style="margin:0;flex:1;padding:12px" onclick="confirmDiscard()">破棄</button>
     </div>
   </div>
 </div>
@@ -474,7 +475,7 @@
 const STORAGE_KEY = "posting_tracks_v2";
 const SUPABASE_URL = "https://rqrntyhuxzndvldgneur.supabase.co";
 const SUPABASE_KEY = "sb_publishable_Q5bssUhH2uYiAfRL8KawxQ_jdMSSqsv";
-const TRACK_COLORS = ["#00e5ff","#ff6b35","#7fff00","#ff3f8e","#ffd600","#b388ff","#00ffcc"];
+const TRACK_COLORS = ["#ff2020","#ff4444","#ff0000","#cc0000","#ff3333","#dd1111","#ee2222"];
 const AREA_COLORS  = ["#ff9100","#e040fb","#40c4ff","#69f0ae","#ffea00","#ff5252"];
 
 // ============================================================
@@ -553,6 +554,7 @@ function startRecording() {
   // UI
   document.getElementById("start-btn").style.display = "none";
   document.getElementById("stop-btn").style.display = "block";
+  document.getElementById("bg-warning").style.display = "block";
   document.getElementById("rec-badge").classList.add("visible");
   document.getElementById("stats-overlay").classList.add("visible");
 
@@ -584,6 +586,7 @@ function startRecording() {
     document.getElementById("stat-time").textContent = formatTime(elapsed);
   }, 1000);
 
+  requestWakeLock();
   toast("記録開始しました");
 }
 
@@ -608,9 +611,11 @@ function stopRecording() {
   navigator.geolocation.clearWatch(watchId);
   clearInterval(timerId);
   recording = false;
+  releaseWakeLock();
 
   document.getElementById("start-btn").style.display = "block";
   document.getElementById("stop-btn").style.display = "none";
+  document.getElementById("bg-warning").style.display = "none";
   document.getElementById("rec-badge").classList.remove("visible");
 
   if (currentPoints.length < 2) {
@@ -699,6 +704,12 @@ async function uploadToSupabase(track) {
     }
   } catch(e) {
     toast("送信失敗（オフライン？）");
+  }
+}
+
+function confirmDiscard() {
+  if (confirm("記録を破棄しますか？\nこの操作は取り消せません。")) {
+    discardTrack();
   }
 }
 
@@ -920,6 +931,47 @@ function downloadSampleGeoJSON() {
   downloadFile(JSON.stringify(sample, null, 2), "sample_areas.geojson", "application/json");
   toast("サンプルをダウンロードしました");
 }
+
+
+// ============================================================
+// バックグラウンド対策
+// ============================================================
+let wakeLock = null;
+
+async function requestWakeLock() {
+  try {
+    if ('wakeLock' in navigator) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      console.log('WakeLock取得');
+    }
+  } catch(e) {
+    console.log('WakeLock失敗:', e);
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLock) {
+    wakeLock.release();
+    wakeLock = null;
+  }
+}
+
+// 画面が復帰したら再取得
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && recording) {
+    await requestWakeLock();
+    // GPS監視が途切れていたら再開
+    if (watchId !== null) {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = navigator.geolocation.watchPosition(
+        onPosition,
+        err => toast("GPS再接続中..."),
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+      );
+      toast("画面復帰 · GPS再接続しました");
+    }
+  }
+});
 
 // ============================================================
 // 常時現在地表示
