@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Posting Tracker</title>
 
 <!-- Leaflet.js -->
@@ -149,6 +149,7 @@
     background: var(--surface);
     border-top: 1px solid var(--border);
     padding: 12px 16px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 16px));
     z-index: 1000;
   }
 
@@ -349,6 +350,19 @@
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
   input[type="file"] { display: none; }
+  .area-tooltip {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    font-family: var(--font) !important;
+    font-size: 9px !important;
+    font-weight: bold !important;
+    color: #fff !important;
+    text-shadow: 0 0 3px #000, 0 0 3px #000 !important;
+    white-space: nowrap !important;
+    padding: 0 !important;
+  }
+  .area-tooltip::before { display: none !important; }
 </style>
 </head>
 <body>
@@ -356,7 +370,7 @@
 
   <!-- ヘッダー -->
   <div id="header">
-    <div id="logo">POSTING TRACKER</div>
+    <div id="logo">京都ポスティング GPSシステム</div>
     <div id="rec-badge"><div class="dot"></div> REC</div>
   </div>
 
@@ -425,14 +439,26 @@
   </div>
 </div>
 
+<!-- スタッフ名モーダル -->
+<div id="staff-modal-overlay" style="display:none;position:fixed;inset:0;background:#000b;z-index:3000;align-items:center;justify-content:center;padding:20px;">
+  <div id="modal-box">
+    <div id="modal-title">スタッフ名を入力</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:12px">配布記録に使用されます</div>
+    <input id="staff-name-input" type="text" placeholder="例：山田太郎" style="width:100%;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--font);font-size:13px;margin-bottom:12px;">
+    <button class="btn btn-cyan" style="margin:0;padding:12px" onclick="saveStaffName()">開始する</button>
+  </div>
+</div>
+
 <!-- 保存モーダル -->
 <div id="modal-overlay">
   <div id="modal-box">
     <div id="modal-title">SAVE TRACK</div>
     <div id="modal-meta"></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">スタッフ名</div>
+    <div id="modal-staff" style="font-size:13px;color:var(--cyan);margin-bottom:12px;font-weight:bold"></div>
     <input id="modal-input" type="text" placeholder="記録名を入力">
     <div class="modal-btns">
-      <button class="btn btn-cyan" style="margin:0;flex:1;padding:12px" onclick="saveTrack()">保存</button>
+      <button class="btn btn-cyan" style="margin:0;flex:1;padding:12px" onclick="saveTrack()">保存・送信</button>
       <button class="btn btn-muted" style="margin:0;flex:1;padding:12px" onclick="discardTrack()">破棄</button>
     </div>
   </div>
@@ -446,6 +472,8 @@
 // 定数
 // ============================================================
 const STORAGE_KEY = "posting_tracks_v2";
+const SUPABASE_URL = "https://rqrntyhuxzndvldgneur.supabase.co";
+const SUPABASE_KEY = "sb_publishable_Q5bssUhH2uYiAfRL8KawxQ_jdMSSqsv";
 const TRACK_COLORS = ["#00e5ff","#ff6b35","#7fff00","#ff3f8e","#ffd600","#b388ff","#00ffcc"];
 const AREA_COLORS  = ["#ff9100","#e040fb","#40c4ff","#69f0ae","#ffea00","#ff5252"];
 
@@ -453,6 +481,7 @@ const AREA_COLORS  = ["#ff9100","#e040fb","#40c4ff","#69f0ae","#ffea00","#ff5252
 // 状態
 // ============================================================
 let map, currentPolyline, currentMarker, liveMarker, liveAccuracyCircle;
+let staffName = localStorage.getItem("staff_name") || "";
 let recording = false;
 let watchId = null, timerId = null;
 let startTime = 0, elapsed = 0;
@@ -470,6 +499,10 @@ window.addEventListener("load", () => {
   initMap();
   loadTracks();
   renderTrackList();
+  // スタッフ名が未設定なら入力モーダルを表示
+  if (!staffName) {
+    document.getElementById("staff-modal-overlay").style.display = "flex";
+  }
 });
 
 function initMap() {
@@ -605,15 +638,29 @@ function stopRecording() {
   document.getElementById("modal-meta").textContent =
     `${(dist/1000).toFixed(2)} km ／ ${formatTime(elapsed)}`;
   document.getElementById("modal-input").value = pendingTrack.name;
+  document.getElementById("modal-staff").textContent = staffName || "未設定";
   document.getElementById("modal-overlay").classList.add("visible");
   document.getElementById("modal-input").focus();
+}
+
+function saveStaffName() {
+  const name = document.getElementById("staff-name-input").value.trim();
+  if (!name) { alert("スタッフ名を入力してください"); return; }
+  staffName = name;
+  localStorage.setItem("staff_name", name);
+  document.getElementById("staff-modal-overlay").style.display = "none";
+  toast("ようこそ " + name + " さん");
 }
 
 function saveTrack() {
   if (!pendingTrack) return;
   pendingTrack.name = document.getElementById("modal-input").value || pendingTrack.name;
+  pendingTrack.staffName = staffName;
   tracks.unshift(pendingTrack);
   saveTracks();
+
+  // Supabaseに送信
+  uploadToSupabase(pendingTrack);
 
   // 軌跡をそのまま地図に残す
   trackPolylines[pendingTrack.id] = currentPolyline;
@@ -624,7 +671,35 @@ function saveTrack() {
   document.getElementById("stats-overlay").classList.remove("visible");
   renderTrackList();
   switchTab("tracks");
-  toast("保存しました");
+  toast("保存・送信しました");
+}
+
+async function uploadToSupabase(track) {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/tracks`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Prefer": "return=minimal"
+      },
+      body: JSON.stringify({
+        staff_name: track.staffName || staffName,
+        date: track.date,
+        distance: Math.round(track.distance),
+        duration: track.duration,
+        points: JSON.stringify(track.points)
+      })
+    });
+    if (res.ok) {
+      toast("サーバーに送信しました ✓");
+    } else {
+      toast("送信失敗（ローカルには保存済み）");
+    }
+  } catch(e) {
+    toast("送信失敗（オフライン？）");
+  }
 }
 
 function discardTrack() {
@@ -765,7 +840,7 @@ function addAreaLayer(geojson, filename) {
     },
     onEachFeature: (feature, layer) => {
       const name = feature.properties?.name || feature.properties?.エリア名 || feature.properties?.area || "";
-      if (name) layer.bindTooltip(name, { permanent: false, direction: "center", className: "area-tooltip" });
+      if (name) layer.bindTooltip(name, { permanent: true, direction: "center", className: "area-tooltip", offset: [0,0] });
     }
   }).addTo(map);
 
