@@ -914,7 +914,7 @@ function addAreaLayer(geojson, filename) {
     layer,
   };
   areaLayers.push(info);
-  map.fitBounds(layer.getBounds(), { padding: [20, 20] });
+  // map.fitBounds(layer.getBounds(), { padding: [20, 20] }); // 現在地優先のため無効
   renderAreaList();
 }
 
