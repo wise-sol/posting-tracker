@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>京都ポスティング 管理ダッシュボード</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #070b14; --surface: #0d1420; --border: #1a2a4a;
+    --cyan: #00e5ff; --green: #7fff00; --pink: #ff3f8e;
+    --yellow: #ffd600; --muted: #4a6080; --text: #e8f0fe;
+    --font: 'DM Mono', 'Courier New', monospace;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); overflow: hidden; }
+
+  #app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* ヘッダー */
+  #header {
+    flex-shrink: 0; padding: 12px 20px;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  #logo { font-size: 13px; letter-spacing: 2px; color: var(--cyan); font-weight: bold; }
+  #header-right { display: flex; align-items: center; gap: 12px; }
+
+  /* メインレイアウト */
+  #main { flex: 1; display: flex; overflow: hidden; }
+
+  /* サイドバー */
+  #sidebar {
+    width: 320px; flex-shrink: 0;
+    background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  #sidebar-header { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .section-title { font-size: 10px; letter-spacing: 2px; color: var(--muted); text-transform: uppercase; margin-bottom: 10px; }
+
+  /* フィルター */
+  #filters { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .filter-row { display: flex; gap: 8px; margin-bottom: 8px; }
+  select, input[type="date"] {
+    flex: 1; padding: 6px 8px;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--text);
+    font-family: var(--font); font-size: 11px;
+  }
+
+  /* 統計 */
+  #stats-bar {
+    display: grid; grid-template-columns: 1fr 1fr 1fr;
+    gap: 1px; background: var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+  .stat-box { background: var(--surface); padding: 10px; text-align: center; }
+  .stat-box-val { font-size: 20px; font-weight: bold; color: var(--cyan); }
+  .stat-box-val.green { color: var(--green); }
+  .stat-box-val.yellow { color: var(--yellow); }
+  .stat-box-lbl { font-size: 9px; color: var(--muted); letter-spacing: 1px; }
+
+  /* 記録リスト */
+  #track-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .track-item {
+    padding: 10px 12px; border: 1px solid var(--border);
+    border-radius: 6px; margin-bottom: 6px; cursor: pointer;
+    transition: border-color .2s;
+  }
+  .track-item:hover { border-color: var(--cyan); }
+  .track-item.active { border-color: var(--cyan); background: #00e5ff08; }
+  .track-item-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .track-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .track-staff { font-size: 13px; font-weight: bold; }
+  .track-meta { font-size: 10px; color: var(--muted); }
+
+  /* 地図 */
+  #map { flex: 1; background: #0a1020; }
+  .leaflet-tile { filter: brightness(0.85) saturate(0.7) hue-rotate(200deg); }
+  .leaflet-control-zoom a { background: var(--surface) !important; color: var(--cyan) !important; border-color: var(--border) !important; }
+  .leaflet-control-attribution { background: #0a0f1aaa !important; color: var(--muted) !important; font-size: 9px !important; }
+
+  /* ボタン */
+  .btn-sm {
+    padding: 6px 12px; background: none;
+    font-family: var(--font); font-size: 11px;
+    letter-spacing: 1px; border-radius: 6px; cursor: pointer;
+  }
+  .btn-cyan { border: 1px solid var(--cyan); color: var(--cyan); }
+  .btn-muted { border: 1px solid var(--border); color: var(--muted); }
+
+  /* ローディング */
+  #loading {
+    position: fixed; inset: 0; background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 9999; font-size: 13px; color: var(--muted); letter-spacing: 2px;
+  }
+
+  /* スクロールバー */
+  ::-webkit-scrollbar { width: 3px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="loading">データを読み込み中...</div>
+
+<div id="app">
+  <div id="header">
+    <div id="logo">京都ポスティング｜管理ダッシュボード</div>
+    <div id="header-right">
+      <button class="btn-sm btn-cyan" onclick="loadTracks()">↻ 更新</button>
+    </div>
+  </div>
+
+  <div id="main">
+    <!-- サイドバー -->
+    <div id="sidebar">
+      <!-- フィルター -->
+      <div id="filters">
+        <div class="section-title">フィルター</div>
+        <div class="filter-row">
+          <input type="date" id="filter-date" onchange="applyFilter()">
+          <select id="filter-staff" onchange="applyFilter()">
+            <option value="">全スタッフ</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn-sm btn-cyan" onclick="showAllTracks()" style="flex:1">全軌跡表示</button>
+          <button class="btn-sm btn-muted" onclick="clearMap()" style="flex:1">クリア</button>
+        </div>
+      </div>
+
+      <!-- 統計 -->
+      <div id="stats-bar">
+        <div class="stat-box">
+          <div class="stat-box-val" id="stat-count">0</div>
+          <div class="stat-box-lbl">記録数</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-box-val green" id="stat-dist">0.0</div>
+          <div class="stat-box-lbl">合計KM</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-box-val yellow" id="stat-staff">0</div>
+          <div class="stat-box-lbl">スタッフ数</div>
+        </div>
+      </div>
+
+      <!-- 記録リスト -->
+      <div id="track-list">
+        <div style="color:var(--muted);font-size:12px;text-align:center;padding:30px">
+          データを読み込み中...
+        </div>
+      </div>
+    </div>
+
+    <!-- 地図 -->
+    <div id="map"></div>
+  </div>
+</div>
+
+<script>
+const SUPABASE_URL = "https://rqrntyhuxzndvldgneur.supabase.co";
+const SUPABASE_KEY = "sb_publishable_Q5bssUhH2uYiAfRL8KawxQ_jdMSSqsv";
+const COLORS = ["#00e5ff","#ff6b35","#7fff00","#ff3f8e","#ffd600","#b388ff","#00ffcc","#ff9100","#e040fb","#40c4ff"];
+
+let map, allTracks = [], filteredTracks = [], polylines = {};
+let staffColorMap = {};
+
+// 初期化
+window.addEventListener("load", () => {
+  initMap();
+  loadTracks();
+  // 今日の日付をデフォルトに
+  const today = new Date().toISOString().split("T")[0];
+  document.getElementById("filter-date").value = today;
+});
+
+function initMap() {
+  map = L.map("map", { center: [35.011636, 135.768029], zoom: 12 });
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom: 19,
+  }).addTo(map);
+}
+
+// Supabaseからデータ取得
+async function loadTracks() {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/tracks?select=*&order=created_at.desc&limit=500`,
+      {
+        headers: {
+          "apikey": SUPABASE_KEY,
+          "Authorization": `Bearer ${SUPABASE_KEY}`
+        }
+      }
+    );
+    if (!res.ok) throw new Error("取得失敗");
+    allTracks = await res.json();
+    document.getElementById("loading").style.display = "none";
+    buildStaffFilter();
+    applyFilter();
+  } catch(e) {
+    document.getElementById("loading").style.display = "none";
+    document.getElementById("track-list").innerHTML =
+      '<div style="color:var(--pink);font-size:12px;text-align:center;padding:20px">データの取得に失敗しました</div>';
+  }
+}
+
+function buildStaffFilter() {
+  const staffSet = [...new Set(allTracks.map(t => t.staff_name).filter(Boolean))];
+  const select = document.getElementById("filter-staff");
+  select.innerHTML = '<option value="">全スタッフ</option>';
+  staffSet.forEach((s, i) => {
+    staffColorMap[s] = COLORS[i % COLORS.length];
+    const opt = document.createElement("option");
+    opt.value = s; opt.textContent = s;
+    select.appendChild(opt);
+  });
+}
+
+function applyFilter() {
+  const date = document.getElementById("filter-date").value;
+  const staff = document.getElementById("filter-staff").value;
+  filteredTracks = allTracks.filter(t => {
+    const tDate = t.date ? t.date.split("T")[0] : "";
+    if (date && !tDate.startsWith(date)) return false;
+    if (staff && t.staff_name !== staff) return false;
+    return true;
+  });
+  updateStats();
+  renderList();
+  showAllTracks();
+}
+
+function updateStats() {
+  const staffSet = new Set(filteredTracks.map(t => t.staff_name).filter(Boolean));
+  const totalDist = filteredTracks.reduce((a, t) => a + (t.distance || 0), 0);
+  document.getElementById("stat-count").textContent = filteredTracks.length;
+  document.getElementById("stat-dist").textContent = (totalDist / 1000).toFixed(1);
+  document.getElementById("stat-staff").textContent = staffSet.size;
+}
+
+function renderList() {
+  const el = document.getElementById("track-list");
+  if (filteredTracks.length === 0) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:30px">記録がありません</div>';
+    return;
+  }
+  el.innerHTML = filteredTracks.map((t, i) => {
+    const color = staffColorMap[t.staff_name] || COLORS[i % COLORS.length];
+    const date = t.date ? new Date(t.date).toLocaleDateString("ja-JP") : "不明";
+    const dist = t.distance ? (t.distance / 1000).toFixed(2) : "0.00";
+    const dur = t.duration ? formatTime(t.duration) : "--:--:--";
+    return `
+      <div class="track-item" onclick="focusTrack(${i})" id="track-item-${i}">
+        <div class="track-item-header">
+          <div class="track-dot" style="background:${color}"></div>
+          <div class="track-staff">${t.staff_name || "不明"}</div>
+        </div>
+        <div class="track-meta">${date} · ${dist}km · ${dur}</div>
+      </div>`;
+  }).join("");
+}
+
+function clearMap() {
+  Object.values(polylines).forEach(pl => map.removeLayer(pl));
+  polylines = {};
+}
+
+function showAllTracks() {
+  clearMap();
+  const bounds = [];
+  filteredTracks.forEach((t, i) => {
+    if (!t.points) return;
+    try {
+      const pts = JSON.parse(t.points);
+      if (pts.length < 2) return;
+      const color = staffColorMap[t.staff_name] || COLORS[i % COLORS.length];
+      const latlngs = pts.map(p => [p.lat, p.lon]);
+      const pl = L.polyline(latlngs, { color, weight: 3, opacity: 0.8 }).addTo(map);
+      polylines[i] = pl;
+      bounds.push(...latlngs);
+    } catch(e) {}
+  });
+  if (bounds.length > 0) {
+    map.fitBounds(L.latLngBounds(bounds), { padding: [30, 30] });
+  }
+}
+
+function focusTrack(i) {
+  document.querySelectorAll(".track-item").forEach(el => el.classList.remove("active"));
+  document.getElementById(`track-item-${i}`)?.classList.add("active");
+  const t = filteredTracks[i];
+  if (!t?.points) return;
+  try {
+    const pts = JSON.parse(t.points);
+    if (pts.length < 2) return;
+    const color = staffColorMap[t.staff_name] || COLORS[i % COLORS.length];
+    // 他の軌跡を薄くして選択した軌跡を強調
+    Object.entries(polylines).forEach(([idx, pl]) => {
+      pl.setStyle({ opacity: parseInt(idx) === i ? 1 : 0.2, weight: parseInt(idx) === i ? 5 : 2 });
+    });
+    const latlngs = pts.map(p => [p.lat, p.lon]);
+    map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
+  } catch(e) {}
+}
+
+function formatTime(s) {
+  return [Math.floor(s/3600), Math.floor(s%3600/60), s%60]
+    .map(v => v.toString().padStart(2,"0")).join(":");
+}
+</script>
+</body>
+</html>
