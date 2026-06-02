@@ -212,6 +212,7 @@
   .btn-sm-green { border: 1px solid var(--green); color: var(--green); }
   .btn-sm-pink { border: 1px solid var(--pink); color: var(--pink); }
   .btn-sm-muted { border: 1px solid var(--border); color: var(--muted); }
+  .btn-sm-muted { border: 1px solid var(--border); color: var(--muted); }
 
   /* ========== TRACK LIST ========== */
   #track-list { max-height: 180px; overflow-y: auto; }
@@ -467,6 +468,7 @@
 
 <!-- トースト -->
 <div id="toast"></div>
+<div id="autosave-indicator" style="position:fixed;bottom:120px;right:16px;background:#0d1420;border:1px solid #1a2a4a;border-radius:20px;padding:6px 14px;font-size:10px;color:#7fff00;z-index:3000;opacity:0;transition:opacity .5s;pointer-events:none">💾 自動保存</div>
 
 <script>
 // ============================================================
@@ -484,13 +486,15 @@ const AREA_COLORS  = ["#ff9100","#e040fb","#40c4ff","#69f0ae","#ffea00","#ff5252
 let map, currentPolyline, currentMarker, liveMarker, liveAccuracyCircle;
 let staffName = localStorage.getItem("staff_name") || "";
 let recording = false;
-let watchId = null, timerId = null;
+let watchId = null, timerId = null, autoSaveTimer = null;
 let startTime = 0, elapsed = 0;
 let currentPoints = [];
 let tracks = [];
 let pendingTrack = null;
 let areaLayers = [];
 let trackPolylines = {};   // id -> leaflet layer
+let autoFollow = true; // 現在地自動追従フラグ
+let hiddenTracks = new Set(); // 非表示のtrack id
 let selectedTrackId = null;
 
 // ============================================================
@@ -517,6 +521,23 @@ function initMap() {
     attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     maxZoom: 19,
   }).addTo(map);
+
+  // 地図ドラッグで自動追従をオフ
+  map.on('dragstart', () => { autoFollow = false; });
+
+  // 中間保存データの復元チェック
+  setTimeout(checkAndRestoreProgress, 1000);
+
+  // 起動時に現在地へ自動移動
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        map.setView([pos.coords.latitude, pos.coords.longitude], 16, { animate: true });
+      },
+      err => {},
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }
 
   // 常時現在地追跡
   startLiveLocation();
@@ -577,7 +598,7 @@ function startRecording() {
   watchId = navigator.geolocation.watchPosition(
     onPosition,
     err => toast("GPS: " + err.message),
-    { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 }
+    { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
   );
 
   // タイマー
@@ -587,6 +608,10 @@ function startRecording() {
   }, 1000);
 
   requestWakeLock();
+  // 30秒ごとに中間保存
+  autoSaveTimer = setInterval(() => {
+    autoSaveProgress();
+  }, 30000);
   toast("記録開始しました");
 }
 
@@ -598,20 +623,25 @@ function onPosition(pos) {
   currentPoints.push({ lat, lon, ts: pos.timestamp });
   currentPolyline.addLatLng([lat, lon]);
   currentMarker.setLatLng([lat, lon]);
-  map.panTo([lat, lon]);
+  if (autoFollow) map.panTo([lat, lon]);
 
   const dist = calcDistance(currentPoints);
   document.getElementById("stat-dist").textContent = (dist / 1000).toFixed(2);
   document.getElementById("stat-pts").textContent = currentPoints.length;
   document.getElementById("accuracy-line").textContent = `GPS: ±${acc}m`;
+  // 10ポイントごとに中間保存
+  if (currentPoints.length % 10 === 0) autoSaveProgress();
 }
 
 function stopRecording() {
   if (!recording) return;
   navigator.geolocation.clearWatch(watchId);
   clearInterval(timerId);
+  if (autoSaveTimer) { clearInterval(autoSaveTimer); autoSaveTimer = null; }
   recording = false;
   releaseWakeLock();
+  // 中間保存データを削除
+  localStorage.removeItem('recording_progress');
 
   document.getElementById("start-btn").style.display = "block";
   document.getElementById("stop-btn").style.display = "none";
@@ -758,8 +788,7 @@ function renderTrackList() {
         <div class="track-meta">${new Date(t.date).toLocaleDateString("ja-JP")} · ${(t.distance/1000).toFixed(2)}km · ${formatTime(t.duration)}</div>
       </div>
       <div class="track-actions">
-        <button class="btn-sm btn-sm-cyan" onclick="event.stopPropagation();exportTrack(${t.id},'gpx')">GPX</button>
-        <button class="btn-sm btn-sm-green" onclick="event.stopPropagation();exportTrack(${t.id},'csv')">CSV</button>
+        <button class="btn-sm ${hiddenTracks.has(t.id) ? 'btn-sm-muted' : 'btn-sm-cyan'}" onclick="event.stopPropagation();toggleTrackVisibility(${t.id})">${hiddenTracks.has(t.id) ? '非表示' : '表示中'}</button>
         <button class="btn-sm btn-sm-pink" onclick="event.stopPropagation();deleteTrack(${t.id})">✕</button>
       </div>
     </div>
@@ -773,6 +802,28 @@ function focusTrack(id) {
   if (!t || !t.points.length) return;
   const bounds = L.latLngBounds(t.points.map(p => [p.lat, p.lon]));
   map.fitBounds(bounds, { padding: [40, 40] });
+}
+
+function toggleTrackVisibility(id) {
+  if (hiddenTracks.has(id)) {
+    // 表示に戻す
+    hiddenTracks.delete(id);
+    const t = tracks.find(t => t.id === id);
+    if (t && t.points && t.points.length >= 2) {
+      const pl = L.polyline(t.points.map(p => [p.lat, p.lon]), {
+        color: t.color, weight: 3, opacity: 0.8,
+      }).addTo(map);
+      trackPolylines[id] = pl;
+    }
+  } else {
+    // 非表示にする
+    hiddenTracks.add(id);
+    if (trackPolylines[id]) {
+      map.removeLayer(trackPolylines[id]);
+      delete trackPolylines[id];
+    }
+  }
+  renderTrackList();
 }
 
 function deleteTrack(id) {
@@ -933,6 +984,92 @@ function downloadSampleGeoJSON() {
 }
 
 
+
+// ============================================================
+// 中間自動保存・復元
+// ============================================================
+function autoSaveProgress() {
+  if (!recording || currentPoints.length === 0) return;
+  const progress = {
+    points: currentPoints,
+    startTime: startTime,
+    elapsed: elapsed,
+    color: currentPoints.length > 0 ? TRACK_COLORS[tracks.length % TRACK_COLORS.length] : TRACK_COLORS[0],
+    savedAt: Date.now()
+  };
+  try {
+    localStorage.setItem('recording_progress', JSON.stringify(progress));
+    // トースト通知（任意）
+    document.getElementById('autosave-indicator').style.opacity = '1';
+    setTimeout(() => {
+      const el = document.getElementById('autosave-indicator');
+      if (el) el.style.opacity = '0';
+    }, 2000);
+  } catch(e) {}
+}
+
+function checkAndRestoreProgress() {
+  try {
+    const saved = localStorage.getItem('recording_progress');
+    if (!saved) return;
+    const progress = JSON.parse(saved);
+    // 6時間以内のデータのみ復元対象
+    if (Date.now() - progress.savedAt > 6 * 3600 * 1000) {
+      localStorage.removeItem('recording_progress');
+      return;
+    }
+    if (progress.points && progress.points.length >= 2) {
+      if (confirm('前回の記録が途中で中断されています。\n' + progress.points.length + '地点・' + formatTime(progress.elapsed) + '\n\n記録を引き継ぎますか？')) {
+        // 記録を復元
+        currentPoints = progress.points;
+        startTime = Date.now() - (progress.elapsed * 1000);
+        recording = true;
+        const color = progress.color || TRACK_COLORS[0];
+
+        // UIを記録中状態に
+        document.getElementById("start-btn").style.display = "none";
+        document.getElementById("stop-btn").style.display = "block";
+        document.getElementById("bg-warning").style.display = "block";
+        document.getElementById("rec-badge").classList.add("visible");
+        document.getElementById("stats-overlay").classList.add("visible");
+
+        // 軌跡を地図に描画
+        currentPolyline = L.polyline(currentPoints.map(p => [p.lat, p.lon]), {
+          color, weight: 4, opacity: 0.9, lineCap: "round", lineJoin: "round"
+        }).addTo(map);
+
+        // マーカー
+        const lastPt = currentPoints[currentPoints.length - 1];
+        const icon = L.divIcon({ className: "", html: '<div style="width:14px;height:14px;background:' + color + ';border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px ' + color + '"></div>', iconSize: [14,14], iconAnchor: [7,7] });
+        currentMarker = L.marker([lastPt.lat, lastPt.lon], { icon }).addTo(map);
+        map.panTo([lastPt.lat, lastPt.lon]);
+
+        // タイマー再開
+        timerId = setInterval(() => {
+          elapsed = Math.floor((Date.now() - startTime) / 1000);
+          document.getElementById("stat-time").textContent = formatTime(elapsed);
+        }, 1000);
+
+        // GPS再開
+        watchId = navigator.geolocation.watchPosition(
+          onPosition,
+          err => toast("GPS: " + err.message),
+          { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
+        );
+
+        // 自動保存再開
+        autoSaveTimer = setInterval(autoSaveProgress, 30000);
+        requestWakeLock();
+        toast("記録を引き継ぎました (" + currentPoints.length + "地点)");
+      } else {
+        localStorage.removeItem('recording_progress');
+      }
+    }
+  } catch(e) {
+    localStorage.removeItem('recording_progress');
+  }
+}
+
 // ============================================================
 // バックグラウンド対策
 // ============================================================
@@ -959,6 +1096,7 @@ function releaseWakeLock() {
 // 画面が復帰したら再取得
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible' && recording) {
+    autoSaveProgress();
     await requestWakeLock();
     // GPS監視が途切れていたら再開
     if (watchId !== null) {
@@ -1018,7 +1156,7 @@ function startLiveLocation() {
       }
     },
     err => {},
-    { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 }
+    { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
   );
 }
 
