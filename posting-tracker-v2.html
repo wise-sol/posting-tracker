@@ -350,6 +350,43 @@
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
+  /* ========== 画面暗転オーバーレイ ========== */
+  #screen-dimmer {
+    display: none;
+    position: fixed; inset: 0;
+    background: #000;
+    z-index: 8000;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    touch-action: none;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #screen-dimmer.visible { display: flex; }
+  #dimmer-rec-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--pink);
+    animation: blink 1s infinite;
+  }
+  #dimmer-label { font-size: 11px; letter-spacing: 3px; color: var(--pink); }
+  #dimmer-time { font-size: 40px; font-weight: bold; color: var(--cyan); letter-spacing: 4px; font-variant-numeric: tabular-nums; }
+  #dimmer-dist { font-size: 20px; color: var(--green); }
+  #dimmer-hint { font-size: 10px; color: #2a3a50; margin-top: 30px; letter-spacing: 1px; }
+
+  /* iOS GPS状態バー */
+  #ios-status {
+    display: none;
+    font-size: 10px; color: var(--yellow);
+    text-align: center;
+    padding: 4px 12px;
+    background: #2a1a00;
+    border-top: 1px solid #4a3000;
+  }
+  #ios-status.visible { display: block; }
+
   input[type="file"] { display: none; }
   .area-tooltip {
     background: transparent !important;
@@ -417,7 +454,11 @@
     <div id="tab-rec" class="tab-content active">
       <button class="btn btn-cyan" id="start-btn" onclick="startRecording()">▶ 配布開始</button>
       <button class="btn btn-pink" id="stop-btn" onclick="stopRecording()" style="display:none">■ 記録停止</button>
-      <div id="bg-warning" style="display:none;font-size:10px;color:var(--yellow);text-align:center;margin-top:8px;line-height:1.6">⚠️ 画面をオフにすると軌跡が途切れる場合があります<br>画面を点けたままご使用ください</div>
+      <button class="btn btn-muted" id="dim-btn" onclick="activateDimmer()" style="display:none;margin-bottom:0">🌑 画面を暗くする（電池節約）</button>
+      <div id="bg-warning" style="display:none;font-size:10px;color:var(--yellow);text-align:center;margin-top:8px;line-height:1.6">
+        📱 iPhoneで使用中：画面ロックを使わず「画面を暗くする」ボタンで節電してください<br>
+        <span style="color:var(--muted)">（バックグラウンドGPS継続のため音声セッションを維持中）</span>
+      </div>
     </div>
 
     <!-- 履歴タブ -->
@@ -439,6 +480,17 @@
     </div>
 
   </div>
+</div>
+
+<!-- 画面暗転オーバーレイ（電池節約用） -->
+<div id="screen-dimmer" onclick="deactivateDimmer()">
+  <div style="display:flex;align-items:center;gap:8px">
+    <div id="dimmer-rec-dot"></div>
+    <div id="dimmer-label">REC · 記録中</div>
+  </div>
+  <div id="dimmer-time">00:00:00</div>
+  <div id="dimmer-dist">0.00 km</div>
+  <div id="dimmer-hint">タップして地図に戻る</div>
 </div>
 
 <!-- スタッフ名モーダル -->
@@ -498,6 +550,13 @@ let trackPolylines = {};   // id -> leaflet layer
 let autoFollow = true; // 現在地自動追従フラグ
 let hiddenTracks = new Set(); // 非表示のtrack id
 let selectedTrackId = null;
+
+// iOS バックグラウンド対策
+let _audioCtx = null;
+let _audioKeepAlive = false;
+let _isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+let _gpsLostTimer = null; // GPS途切れ検出用
+let _lastGpsTime = 0;
 
 // ============================================================
 // 初期化
@@ -578,9 +637,13 @@ function startRecording() {
   // UI
   document.getElementById("start-btn").style.display = "none";
   document.getElementById("stop-btn").style.display = "block";
+  document.getElementById("dim-btn").style.display = "block";
   document.getElementById("bg-warning").style.display = "block";
   document.getElementById("rec-badge").classList.add("visible");
   document.getElementById("stats-overlay").classList.add("visible");
+
+  // iOS: サイレントオーディオでバックグラウンドGPS維持
+  if (_isIOS) startSilentAudio();
 
   // 軌跡ライン
   const color = TRACK_COLORS[tracks.length % TRACK_COLORS.length];
@@ -623,15 +686,30 @@ function onPosition(pos) {
   const lon = pos.coords.longitude;
   const acc = Math.round(pos.coords.accuracy);
 
+  _lastGpsTime = Date.now();
+  // GPS途切れ検出リセット
+  if (_gpsLostTimer) clearTimeout(_gpsLostTimer);
+  if (recording) {
+    _gpsLostTimer = setTimeout(() => {
+      if (recording) restartGpsWatch();
+    }, 30000); // 30秒GPSが来なければ再起動
+  }
+
   currentPoints.push({ lat, lon, ts: pos.timestamp });
   currentPolyline.addLatLng([lat, lon]);
   currentMarker.setLatLng([lat, lon]);
-  if (autoFollow) map.panTo([lat, lon]);
+  if (autoFollow && !document.getElementById("screen-dimmer").classList.contains("visible")) {
+    map.panTo([lat, lon]);
+  }
 
   const dist = calcDistance(currentPoints);
   document.getElementById("stat-dist").textContent = (dist / 1000).toFixed(2);
   document.getElementById("stat-pts").textContent = currentPoints.length;
   document.getElementById("accuracy-line").textContent = `GPS: ±${acc}m`;
+
+  // 暗転中のリアルタイム表示も更新
+  document.getElementById("dimmer-dist").textContent = (dist / 1000).toFixed(2) + " km";
+
   // 10ポイントごとに中間保存
   if (currentPoints.length % 10 === 0) autoSaveProgress();
 }
@@ -641,13 +719,17 @@ function stopRecording() {
   navigator.geolocation.clearWatch(watchId);
   clearInterval(timerId);
   if (autoSaveTimer) { clearInterval(autoSaveTimer); autoSaveTimer = null; }
+  if (_gpsLostTimer) { clearTimeout(_gpsLostTimer); _gpsLostTimer = null; }
   recording = false;
   releaseWakeLock();
+  stopSilentAudio();
+  deactivateDimmer();
   // 中間保存データを削除
   localStorage.removeItem('recording_progress');
 
   document.getElementById("start-btn").style.display = "block";
   document.getElementById("stop-btn").style.display = "none";
+  document.getElementById("dim-btn").style.display = "none";
   document.getElementById("bg-warning").style.display = "none";
   document.getElementById("rec-badge").classList.remove("visible");
 
@@ -1038,9 +1120,11 @@ function checkAndRestoreProgress() {
         // UIを記録中状態に
         document.getElementById("start-btn").style.display = "none";
         document.getElementById("stop-btn").style.display = "block";
+        document.getElementById("dim-btn").style.display = "block";
         document.getElementById("bg-warning").style.display = "block";
         document.getElementById("rec-badge").classList.add("visible");
         document.getElementById("stats-overlay").classList.add("visible");
+        if (_isIOS) startSilentAudio();
 
         // 軌跡を地図に描画
         currentPolyline = L.polyline(currentPoints.map(p => [p.lat, p.lon]), {
@@ -1102,23 +1186,114 @@ function releaseWakeLock() {
   }
 }
 
-// 画面が復帰したら再取得
+// 画面が復帰したら再取得（電話着信後の復旧を含む）
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible' && recording) {
     autoSaveProgress();
     await requestWakeLock();
-    // GPS監視が途切れていたら再開
-    if (watchId !== null) {
-      navigator.geolocation.clearWatch(watchId);
-      watchId = navigator.geolocation.watchPosition(
-        onPosition,
-        err => toast("GPS再接続中..."),
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
-      );
-      toast("画面復帰 · GPS再接続しました");
+    // サイレントオーディオが止まっていたら再開
+    if (_isIOS && (!_audioCtx || _audioCtx.state === 'suspended')) {
+      _audioCtx?.resume().catch(() => {});
+      startSilentAudio();
     }
+    restartGpsWatch();
   }
 });
+
+// iOS: ページが非表示→再表示（アプリ切り替え後）
+window.addEventListener('pageshow', async (e) => {
+  if (recording) {
+    await requestWakeLock();
+    if (_isIOS) startSilentAudio();
+    restartGpsWatch();
+    toast("復帰しました · GPS再接続中");
+  }
+});
+
+// ============================================================
+// iOS バックグラウンドGPS対策: サイレントオーディオ
+// AudioContextが動作中だとiOSは画面ロック中もGPSを継続する
+// ============================================================
+function startSilentAudio() {
+  if (_audioKeepAlive) return; // すでに動作中
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    _audioCtx = new AC();
+    _audioKeepAlive = true;
+    _scheduleSilentBuffer();
+  } catch(e) {}
+}
+
+function _scheduleSilentBuffer() {
+  if (!_audioKeepAlive || !_audioCtx) return;
+  try {
+    // 0.5秒の無音バッファを繰り返し再生
+    const buf = _audioCtx.createBuffer(1, Math.floor(_audioCtx.sampleRate * 0.5), _audioCtx.sampleRate);
+    const src = _audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(_audioCtx.destination);
+    src.start(0);
+    src.onended = _scheduleSilentBuffer;
+  } catch(e) {}
+}
+
+function stopSilentAudio() {
+  _audioKeepAlive = false;
+  if (_audioCtx) {
+    try { _audioCtx.close(); } catch(e) {}
+    _audioCtx = null;
+  }
+}
+
+// ============================================================
+// GPS監視の再起動
+// ============================================================
+function restartGpsWatch() {
+  if (!recording) return;
+  if (watchId !== null) {
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+  watchId = navigator.geolocation.watchPosition(
+    onPosition,
+    err => {
+      toast("GPS: 再接続中...");
+      // エラー後1秒で再試行
+      setTimeout(() => { if (recording) restartGpsWatch(); }, 1000);
+    },
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
+  );
+}
+
+// ============================================================
+// 画面暗転（電池節約モード）
+// ============================================================
+function activateDimmer() {
+  const el = document.getElementById("screen-dimmer");
+  el.classList.add("visible");
+  // 現在の値を即時反映
+  document.getElementById("dimmer-time").textContent =
+    document.getElementById("stat-time").textContent;
+  document.getElementById("dimmer-dist").textContent =
+    document.getElementById("stat-dist").textContent + " km";
+  // タイマー同期
+  _dimmerTimer = setInterval(() => {
+    document.getElementById("dimmer-time").textContent =
+      document.getElementById("stat-time").textContent;
+  }, 1000);
+  // スクロール・ズームを止める
+  document.body.style.overflow = "hidden";
+}
+
+let _dimmerTimer = null;
+function deactivateDimmer() {
+  const el = document.getElementById("screen-dimmer");
+  el.classList.remove("visible");
+  if (_dimmerTimer) { clearInterval(_dimmerTimer); _dimmerTimer = null; }
+  document.body.style.overflow = "";
+  autoFollow = true;
+}
 
 // ============================================================
 // 常時現在地表示
