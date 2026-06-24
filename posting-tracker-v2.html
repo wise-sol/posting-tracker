@@ -401,15 +401,6 @@
     padding: 0 !important;
   }
   .area-tooltip::before { display: none !important; }
-  .area-popup .leaflet-popup-content-wrapper {
-    background: #0d1420 !important;
-    border: 1px solid #1a2a4a !important;
-    border-radius: 8px !important;
-    box-shadow: 0 4px 20px #00000088 !important;
-    color: #e8f0fe !important;
-  }
-  .area-popup .leaflet-popup-tip { background: #0d1420 !important; }
-  .area-popup .leaflet-popup-close-button { color: #4a6080 !important; }
 </style>
 </head>
 <body>
@@ -1003,23 +994,6 @@ function addAreaLayer(geojson, filename) {
     onEachFeature: (feature, lyr) => {
       const name = feature.properties?.name || feature.properties?.エリア名 || feature.properties?.area || "";
       if (name) lyr.bindTooltip(name, { permanent: true, direction: "center", className: "area-tooltip", offset: [0,0] });
-
-      // クリックで町名を逆ジオコーディング取得
-      lyr.on("click", async (e) => {
-        L.DomEvent.stopPropagation(e);
-        const centroid = polygonCentroid(feature.geometry.coordinates);
-        const popup = L.popup({ className: "area-popup" })
-          .setLatLng(e.latlng)
-          .setContent(`<div style="font-family:monospace;font-size:12px"><b style="color:#00e5ff">${name || "エリア"}</b><br><span style="color:#888;font-size:10px">町名を取得中...</span></div>`)
-          .openOn(map);
-        const townName = await reverseGeocode(centroid.lat, centroid.lon);
-        popup.setContent(
-          `<div style="font-family:monospace;font-size:12px;line-height:1.6">` +
-          `<b style="color:#00e5ff">${name || "エリア"}</b><br>` +
-          `<span style="color:#e8f0fe">${townName || "町名不明"}</span>` +
-          `</div>`
-        );
-      });
     }
   }).addTo(map);
 
@@ -1063,41 +1037,6 @@ function removeArea(id) {
   map.removeLayer(areaLayers[idx].layer);
   areaLayers.splice(idx, 1);
   renderAreaList();
-}
-
-// ============================================================
-// 逆ジオコーディング（Nominatim / OpenStreetMap）
-// ============================================================
-const _geocodeCache = {};
-
-async function reverseGeocode(lat, lon) {
-  const key = `${lat.toFixed(5)},${lon.toFixed(5)}`;
-  if (_geocodeCache[key]) return _geocodeCache[key];
-  try {
-    const res = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=ja`,
-      { headers: { "User-Agent": "PostingTracker/1.0" } }
-    );
-    const data = await res.json();
-    const a = data.address || {};
-    // 町名レベルで最も詳細な情報を優先して取得
-    const town = a.quarter || a.neighbourhood || a.hamlet || a.suburb || "";
-    const district = a.city_district || a.county || "";
-    const city = a.city || a.town || "";
-    const result = [city, district, town].filter(Boolean).join(" ");
-    _geocodeCache[key] = result;
-    return result;
-  } catch(e) {
-    return "";
-  }
-}
-
-// ポリゴンの重心（算術平均）
-function polygonCentroid(coordinates) {
-  const ring = coordinates[0];
-  let sumLat = 0, sumLon = 0;
-  ring.forEach(([lon, lat]) => { sumLon += lon; sumLat += lat; });
-  return { lat: sumLat / ring.length, lon: sumLon / ring.length };
 }
 
 // サンプルGeoJSON（京都市内のダミーエリア）
