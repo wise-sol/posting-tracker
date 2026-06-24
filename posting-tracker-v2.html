@@ -410,7 +410,7 @@
     <div id="tab-bar">
       <button class="tab-btn active" onclick="switchTab('rec')">● 記録</button>
       <button class="tab-btn" onclick="switchTab('tracks')">≡ 履歴</button>
-      
+      <button class="tab-btn" onclick="switchTab('area')">⬡ エリア</button>
     </div>
 
     <!-- 記録タブ -->
@@ -426,6 +426,17 @@
     </div>
 
     <!-- エリアタブ -->
+    <div id="tab-area" class="tab-content">
+      <div class="file-drop-zone" onclick="document.getElementById('geojson-file').click()">
+        ＋ GeoJSONファイルを読み込む
+      </div>
+      <input type="file" id="geojson-file" accept=".geojson,.json" onchange="loadGeoJSON(event)">
+      <div id="area-list"><div style="color:var(--muted);font-size:11px;text-align:center;padding:8px">エリアデータなし</div></div>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <button class="btn-sm btn-sm-muted" onclick="downloadSampleGeoJSON()" style="flex:1">サンプルDL</button>
+        <button class="btn-sm btn-sm-pink" onclick="clearAreas()" style="flex:1">全消去</button>
+      </div>
+    </div>
 
   </div>
 </div>
@@ -448,6 +459,8 @@
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px">スタッフ名</div>
     <div id="modal-staff" style="font-size:13px;color:var(--cyan);margin-bottom:12px;font-weight:bold"></div>
     <input id="modal-input" type="text" placeholder="記録名を入力">
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">配布枚数（任意）</div>
+    <input id="modal-count" type="number" min="0" placeholder="例：500" style="width:100%;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--font);font-size:13px;margin-bottom:12px;">
     <div class="modal-btns">
       <button class="btn btn-cyan" style="margin:0;flex:1;padding:12px" onclick="saveTrack()">保存・送信</button>
       <button class="btn btn-muted" style="margin:0;flex:1;padding:12px" onclick="confirmDiscard()">破棄</button>
@@ -548,7 +561,8 @@ function switchTab(id) {
     b.classList.toggle("active", ["rec","tracks","area"][i] === id);
   });
   document.querySelectorAll(".tab-content").forEach(el => el.classList.remove("active"));
-  document.getElementById(`tab-${id}`).classList.add("active");
+  const tabEl = document.getElementById(`tab-${id}`);
+  if (tabEl) tabEl.classList.add("active");
 }
 
 // ============================================================
@@ -680,6 +694,9 @@ function saveTrack() {
   if (!pendingTrack) return;
   pendingTrack.name = document.getElementById("modal-input").value || pendingTrack.name;
   pendingTrack.staffName = staffName;
+  const countVal = parseInt(document.getElementById("modal-count").value, 10);
+  pendingTrack.leafletCount = isNaN(countVal) ? null : countVal;
+  document.getElementById("modal-count").value = "";
   tracks.unshift(pendingTrack);
   saveTracks();
 
@@ -713,7 +730,8 @@ async function uploadToSupabase(track) {
         date: track.date,
         distance: Math.round(track.distance),
         duration: track.duration,
-        points: JSON.stringify(track.points)
+        points: JSON.stringify(track.points),
+        leaflet_count: track.leafletCount ?? null
       })
     });
     if (res.ok) {
@@ -769,19 +787,21 @@ function renderTrackList() {
     el.innerHTML = `<div style="color:var(--muted);font-size:12px;text-align:center;padding:20px">記録がありません</div>`;
     return;
   }
-  el.innerHTML = tracks.map(t => `
+  el.innerHTML = tracks.map(t => {
+    const countStr = t.leafletCount != null ? ` · ${t.leafletCount}枚` : "";
+    return `
     <div class="track-item ${selectedTrackId === t.id ? 'selected' : ''}" onclick="focusTrack(${t.id})">
       <div class="track-color-dot" style="background:${t.color}"></div>
       <div class="track-info">
         <div class="track-name">${t.name}</div>
-        <div class="track-meta">${new Date(t.date).toLocaleDateString("ja-JP")} · ${(t.distance/1000).toFixed(2)}km · ${formatTime(t.duration)}</div>
+        <div class="track-meta">${new Date(t.date).toLocaleDateString("ja-JP")} · ${(t.distance/1000).toFixed(2)}km · ${formatTime(t.duration)}${countStr}</div>
       </div>
       <div class="track-actions">
         <button class="btn-sm ${hiddenTracks.has(t.id) ? 'btn-sm-muted' : 'btn-sm-cyan'}" onclick="event.stopPropagation();toggleTrackVisibility(${t.id})">${hiddenTracks.has(t.id) ? '非表示' : '表示中'}</button>
         <button class="btn-sm btn-sm-pink" onclick="event.stopPropagation();deleteTrack(${t.id})">✕</button>
       </div>
-    </div>
-  `).join("");
+    </div>`;
+  }).join("");
 }
 
 function focusTrack(id) {
